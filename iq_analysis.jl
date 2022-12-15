@@ -26,11 +26,16 @@ fs: Sampling frequency (input)
 fr: Resampling frequency (output)
 """
 function resample(x, fs, fr; interp=:nearest)
+	step = fs / fr
+	indices = collect(1:step:length(x))
 	if interp == :nearest
-		step = fs / fr
-		indices = collect(1:step:length(x))
 		indices = Int.(round.(indices))
 		x[indices]
+	elseif interp == :linear
+		i1 = trunc.(Int, indices)
+		i2_w = indices .- i1
+		i1_w = 1 .- i2_w
+		x[i1] .* i1_w .+ x[i1.+1] .* i2_w
 	else
 		error("Provided interp does not exist")
 	end
@@ -90,8 +95,37 @@ function rangeautocor(data, estimated_clock, margin)
 	return clock_range, ac
 end
 
+# ╔═╡ 7141121c-b8a8-41c4-b973-04c61e4fa751
+rangeautocor(abs.(data), )
+
 # ╔═╡ 20443467-7fd9-4617-ae41-7c253c4377d5
 function recoverClock(data)
+	# Start with correlating lines and 0.5% margin
+	estimated_clock = LINE_SIZE*(SAMPLING_FREQ / PIXEL_CLOCK)
+	println(estimated_clock)
+	ac_window_size = trunc(Int, estimated_clock*500)
+	cr1, ac1 = rangeautocor(data[1:ac_window_size], estimated_clock, 0.005)
+	estimated_clock = cr1[argmax(ac1)]
+
+	recovered_clock = 1 ./ (cr1 / (LINE_SIZE) / SAMPLING_FREQ) ./ 1_000_000
+	# plot(recovered_clock, ac1, title="Autocorrelation of image lines", xlabel="Pixel clock (MHz)", ylabel="Autocorrelation")
+	# savefig("autocor_coarse.pdf")
+	
+	# Given our new estimated clock, now correlate frames with a 1-line margin
+	estimated_clock *= N_LINES
+	cr2, ac2 = rangeautocor(data, estimated_clock, N_LINES ÷ 2)
+	estimated_clock = cr2[argmax(ac1)]
+	println(estimated_clock)
+
+	recovered_clock = 1 ./ (cr2 / (LINE_SIZE*N_LINES) / SAMPLING_FREQ) ./ 1_000_000
+	# plot(cr2, ac2, title="Autocorrelation of image frames", xlabel="Pixel clock (MHz)", ylabel="Autocorrelation")
+	# savefig("autocor_fine.pdf")
+
+	recovered_clock[argmax(ac2)]
+end
+
+# ╔═╡ 9df875cd-a09b-4353-8033-8f827da64bd5
+function recoverClockTest(data)
 	# Start with correlating lines and 0.5% margin
 	estimated_clock = LINE_SIZE*(SAMPLING_FREQ / PIXEL_CLOCK)
 	println(estimated_clock)
@@ -110,11 +144,14 @@ function recoverClock(data)
 	println(estimated_clock)
 
 	recovered_clock = 1 ./ (cr2 / (LINE_SIZE*N_LINES) / SAMPLING_FREQ) ./ 1_000_000
-	plot(recovered_clock, ac2, title="Autocorrelation of image frames", xlabel="Pixel clock (MHz)", ylabel="Autocorrelation")
-	savefig("autocor_fine.pdf")
+	plot(cr2, ac2, title="Autocorrelation of image frames", xlabel="Pixel clock (MHz)", ylabel="Autocorrelation")
+	# savefig("autocor_fine.pdf")
 
-	recovered_clock[argmax(ac2)]
+	# recovered_clock[argmax(ac2)]
 end
+
+# ╔═╡ fb9bb971-60a7-4d01-9c22-fd113d8c709c
+recoverClockTest(data)
 
 # ╔═╡ e8640e62-5602-4c40-8ab0-03bbd06d492a
 PIXEL_CLOCK2 = trunc(Int, recoverClock(abs.(data)) * 1_000_000) 
@@ -179,10 +216,15 @@ end
 # ╔═╡ 7702e5a9-f20d-429b-81f6-b6075270943f
 begin
 	using Measures;
-	a, b=fft_freq(data[1:1000000], SAMPLING_FREQ)
+	# a, b=fft_freq(data[1:1000000], SAMPLING_FREQ)
+	# top_freqs, top_freq_values = topnfft(a, abs.(b), 2)
+	# plot(a, abs.(b), ylabel="FFT magnitude", xlabel="Frequency", size=(600, 200), margin=5mm)
+	# savefig("iq_425M_frequency.pdf")
+
+	a, b=fft_freq(data, SAMPLING_FREQ)
 	top_freqs, top_freq_values = topnfft(a, abs.(b), 2)
-	plot(a, abs.(b), ylabel="FFT magnitude", xlabel="Frequency", size=(600, 200), margin=5mm)
-	savefig("iq_425M_frequency.pdf")
+	# plot(a, abs.(b), ylabel="FFT magnitude", xlabel="Frequency", size=(600, 200), margin=5mm)
+	# savefig("iq_425M_frequency.pdf")
 end
 
 # ╔═╡ 6fe786b8-cc8a-4ab6-8951-5cb3223a070b
@@ -200,7 +242,7 @@ shifted_data = phasor .* data
 # ╔═╡ 053982b5-2987-41a1-9441-a5c043b19d8b
 begin
 	filter = digitalfilter(Filters.Lowpass(1000, fs=SAMPLING_FREQ), Butterworth(10))
-	filtered_data = filt(filter, shifted_data)
+	filtered_data = filt(filter, shifted_data)#Windows.hanning(length(shifted_data)).*shifted_data)
 end
 
 # ╔═╡ 9290acb7-8ba6-43ce-9c82-0e1625ccb61f
@@ -219,6 +261,13 @@ begin
 	colour2_rowified[1:525*5, :]
 end
 
+# ╔═╡ a0d4c46f-d1d4-4af7-a79e-9fd691613c9d
+
+# begin
+# 	a3,b3 = fft_freq(data, SAMPLING_FREQ)
+# 	topnfft(a3, abs.(b3), 2)
+# end
+
 # ╔═╡ a07d95b8-baf5-4174-b5e5-c14893300a40
 md"""
 ## Removing phase drift
@@ -232,34 +281,153 @@ end
 # ╔═╡ 735bb5bb-00b6-4ee2-b6c5-dd09117efbc0
 function fm_demodulate2(data)
 	dz = data[2:end] .- data[1:end-1]
-	rots = dz ./ data[2:end]
+	mag = abs.(data[2:end]).^2
+	imag.(dz .* conj.(data[2:end])) ./ mag
+	
+	# rots = dz ./ data[2:end]
 	# s = s / 2im * pi
 end
 
-# ╔═╡ 93650a30-3c95-4c30-ab83-0777a1af1af2
+# ╔═╡ bb94dc2e-292f-4c45-8b72-30fc791e3e32
+plot(real.(filtered_data)[10_000_000:10:20_000_000])
 
+# ╔═╡ 5c66d78a-93e1-4d53-97ce-8ffd35d5034d
+length(filtered_data)
+
+# ╔═╡ 93650a30-3c95-4c30-ab83-0777a1af1af2
+fm_demodulate2(filtered_data[1:1000])
 
 # ╔═╡ b8f17589-f915-485c-b6ea-b8d603d7f76a
 demod = fm_demodulate2(filtered_data)
 
+# ╔═╡ 53e042cb-5f74-45e4-a1a1-e90bf2824b01
+demod
+
 # ╔═╡ 6ff86851-aa3d-4f6e-b051-574914547ef7
-plot(demod[1:10000000])
-
-# ╔═╡ 4c151bde-4dbf-4511-9aa3-ebfc38772369
-demod[1:10000000]
-
-# ╔═╡ 18b2cf67-1996-4d49-ad8f-fb6d791b0a4d
-mean(real.(demod)[100000:10000000])
+plot(demod[1000000:end-10000])
 
 # ╔═╡ d1c44034-2a2d-4d9c-8fd5-144ab31da1fb
 replace!(demod, NaN=>0)
 
 # ╔═╡ a620b6bc-f842-47ac-b96e-5cec607a6f42
 # +1.8024010961716936e-6*1.5
-mean(demod)
+mean(demod[100000:end-100000])
 
 # ╔═╡ ee2c3a90-b942-4653-bef6-3cf8c971c65e
-median(demod)
+median(demod[100000:end-100000])
+
+# ╔═╡ 15812d10-0d01-47ae-99a7-c7d87bd4a5e9
+-9.75276 / SAMPLING_FREQ
+
+# ╔═╡ ae75d82d-4d75-42e2-9954-804dc3fd29e1
+phasor2 = exp.(1im .* ((2 * pi * (-top_freqs[2] / SAMPLING_FREQ)) + (21*pi/length(data))) .*  range(1,length(data)))
+
+# ╔═╡ c354a93a-ef80-4a46-a220-e663f55ecb92
+begin
+	colour3 = HSV.(minmaxnorm(angle.(data .* phasor2), 0, 360), 1, norm1(abs.(data))*2)
+	colour3_rowified = rowify(resample(colour3, SAMPLING_FREQ, PIXEL_CLOCK2)[191621:end], LINE_SIZE)'
+	colour3_rowified[1:525*5, :]
+end
+
+# ╔═╡ 498a0101-2f69-4907-9121-aedbfa7d694c
+function coherentavg(data, n)
+	res = data[1:525, :]
+	i = 525
+	for j in range(1, n)
+		# println(size(data[i:i+524, :]), size(data[i:i+524, :]))
+		res .+= data[i+1:i+525, :]
+		i += 525
+	end
+	res
+end
+
+# ╔═╡ 24112fd4-57f5-41a3-9bff-8d7fc11d21bb
+
+
+# ╔═╡ 4916f60e-aab3-4c6c-bee6-13454f8b92f8
+data
+
+# ╔═╡ 1efbf210-2cac-42e1-b872-1c58353d8293
+data_phasor = rowify(resample(data .* phasor, SAMPLING_FREQ, PIXEL_CLOCK2)[191621:end], LINE_SIZE)'
+
+# ╔═╡ c0b30181-d4e4-404d-933a-0118560b7691
+data_phasor2 = rowify(resample(data .* phasor2, SAMPLING_FREQ, PIXEL_CLOCK2)[191621:end], LINE_SIZE)'
+
+# ╔═╡ 9f44ac9a-348c-4bd7-aeef-1ddc784415db
+begin
+	data_coherentavg1 = coherentavg(data_phasor, 20)
+	HSV.(minmaxnorm(angle.(data_coherentavg1), 0, 360).+50, 1, norm1(abs.(data_coherentavg1))*2)
+end
+
+# ╔═╡ 759bb906-64a8-44f8-8a27-aaeb3d7de1db
+begin
+	data_coherentavg = coherentavg(data_phasor2, 15)
+	colour_avg = HSV.(minmaxnorm(angle.(data_coherentavg), 0, 360).+50, 1, norm1(abs.(data_coherentavg))*2)
+	colour_avg
+end
+
+# ╔═╡ 556e8476-f758-45b6-9e71-d016e7d2463b
+colour3_rowified[1:525*20, :]
+
+# ╔═╡ b99be647-bd2d-4f81-863a-0c8d1c5de9df
+begin
+	plot(real.(data[1:15]))
+	plot!(imag.(data[1:15]))
+end
+
+# ╔═╡ b95aff64-5ad4-4a44-86ff-3a289833a0a1
+plot(resample(angle.(data .* phasor2), SAMPLING_FREQ, PIXEL_CLOCK2))[191621:191621+800])
+
+# ╔═╡ 1fb594a8-a978-408c-98e6-e3d11d419257
+resampled_phase = resample(angle.(data .* phasor2), SAMPLING_FREQ, PIXEL_CLOCK2)
+
+# ╔═╡ acd579d9-0a47-4b34-90f6-6e31fd5fc9eb
+resampled_phase_rowified = rowify(resampled_phase[191621:end], LINE_SIZE)'
+
+# ╔═╡ b840bade-494e-472f-a06d-eafa402f5379
+unwrap(resampled_phase_rowified)
+
+# ╔═╡ f9e6ffb6-7ba9-43d2-bb00-9d5ab9b0cb9b
+plot(vec(median(resampled_phase_rowified[:, 700:700], dims=2)))
+
+# ╔═╡ 7d6eb7ac-2545-4c21-8eba-6c715df55dc9
+
+
+# ╔═╡ 244c51fa-fcd4-4525-bc3e-47c475fdb5c1
+plot(resampled_phase_rowified[2000:2001, 700:780]')
+
+# ╔═╡ 553c1934-3384-4fbf-8016-c915da377d58
+plot(var(resampled_phase_rowified[:, 700:780]', dims=1)')
+
+# ╔═╡ f63bee21-6405-48fe-8d88-52e46d4a92c4
+variances = var(resampled_phase_rowified[:, 700:780]', dims=1)'
+
+# ╔═╡ 35c9e12e-591b-4260-b4ea-2aa33148f5b4
+
+
+# ╔═╡ 3c19f180-ae24-43f5-9080-c59345ecab6e
+function unwrap_mean(x)
+	
+end
+
+# ╔═╡ fd867ba0-7278-4316-bed1-1b623231378a
+begin
+end_phase = mean(resampled_phase_rowified[:, 700:800], dims=2)
+end_phase .*= Windows.hanning(length(end_phase)) 
+plot(end_phase)
+end
+
+# ╔═╡ 9e38124a-8d5b-4c7d-9d71-6b9d892139e4
+plot(abs.(fftshift(fft(mean(resampled_phase_rowified[:, 700:800], dims=2)))))
+
+# ╔═╡ 08ce0c2b-7c0d-4e23-ac10-87814b50f4af
+freq0, fft0 = fft_freq(vec(end_phase), SAMPLING_FREQ / LINE_SIZE)
+
+# ╔═╡ 79c603df-a482-424e-830f-f1326ec504df
+topnfft(freq0, abs.(fft0), 1000)
+
+# ╔═╡ 3abba425-359d-433f-bff3-e3e3067e2e85
+mean(resampled_phase_rowified[:, 700:800], dims=2)
 
 # ╔═╡ b085c25e-abd3-47d8-bb64-c7e0d90057da
 md"""
@@ -339,6 +507,12 @@ end
 # ╔═╡ 64975b8c-a03b-4e0a-b037-2303095233af
 skip_pixels + LINE_SIZE * skip_lines
 
+# ╔═╡ 9adcadd6-a1e2-40ae-97f2-ddc80e42891d
+Gray.(norm1(vert_signal[1:525, :] .+ vert_signal[525*1+1:525*2, :].+ vert_signal[525*2+1:525*3, :].+vert_signal[525*3+1:525*4, :].+vert_signal[525*20+1:525*21, :]))
+
+# ╔═╡ d2a019e9-49af-4118-a673-7dc09e522c45
+Gray.(norm1(coherentavg(vert_signal, 10))*1.5)
+
 # ╔═╡ 00000000-0000-0000-0000-000000000001
 PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
@@ -372,7 +546,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.8.2"
 manifest_format = "2.0"
-project_hash = "20a9ce6deea9ae759ff88e1fd0f64608e6b96561"
+project_hash = "1b96c4b99aa414c15cc1c174da4a3d288b83ec92"
 
 [[deps.AbstractFFTs]]
 deps = ["ChainRulesCore", "LinearAlgebra"]
@@ -1564,7 +1738,10 @@ version = "1.4.1+0"
 # ╠═c37fec9b-f2d2-4902-9122-6509c2c0b1d0
 # ╠═81a62c34-006d-435f-bff6-323bb7091d20
 # ╠═c7d2505a-8962-4771-aa9b-4cd525bde4ce
+# ╠═7141121c-b8a8-41c4-b973-04c61e4fa751
 # ╠═20443467-7fd9-4617-ae41-7c253c4377d5
+# ╠═9df875cd-a09b-4353-8033-8f827da64bd5
+# ╠═fb9bb971-60a7-4d01-9c22-fd113d8c709c
 # ╠═e8640e62-5602-4c40-8ab0-03bbd06d492a
 # ╠═8d5fe3f1-5a80-49ec-9227-2a8d9cc733d0
 # ╠═c59b43e3-3e65-4fb9-8752-0080da531b25
@@ -1586,17 +1763,47 @@ version = "1.4.1+0"
 # ╠═9290acb7-8ba6-43ce-9c82-0e1625ccb61f
 # ╠═9179e4cc-995d-4a17-a52e-9062e10560c7
 # ╠═33524cae-63aa-4b9e-8741-f1e8daed464f
+# ╠═a0d4c46f-d1d4-4af7-a79e-9fd691613c9d
 # ╠═a07d95b8-baf5-4174-b5e5-c14893300a40
 # ╠═23800f2a-3c8c-41cf-a629-b20ce2fc0229
 # ╠═735bb5bb-00b6-4ee2-b6c5-dd09117efbc0
+# ╠═bb94dc2e-292f-4c45-8b72-30fc791e3e32
+# ╠═5c66d78a-93e1-4d53-97ce-8ffd35d5034d
 # ╠═93650a30-3c95-4c30-ab83-0777a1af1af2
 # ╠═b8f17589-f915-485c-b6ea-b8d603d7f76a
+# ╠═53e042cb-5f74-45e4-a1a1-e90bf2824b01
 # ╠═6ff86851-aa3d-4f6e-b051-574914547ef7
-# ╠═4c151bde-4dbf-4511-9aa3-ebfc38772369
-# ╠═18b2cf67-1996-4d49-ad8f-fb6d791b0a4d
 # ╠═d1c44034-2a2d-4d9c-8fd5-144ab31da1fb
 # ╠═a620b6bc-f842-47ac-b96e-5cec607a6f42
 # ╠═ee2c3a90-b942-4653-bef6-3cf8c971c65e
+# ╠═15812d10-0d01-47ae-99a7-c7d87bd4a5e9
+# ╠═ae75d82d-4d75-42e2-9954-804dc3fd29e1
+# ╠═c354a93a-ef80-4a46-a220-e663f55ecb92
+# ╠═498a0101-2f69-4907-9121-aedbfa7d694c
+# ╠═24112fd4-57f5-41a3-9bff-8d7fc11d21bb
+# ╠═4916f60e-aab3-4c6c-bee6-13454f8b92f8
+# ╠═1efbf210-2cac-42e1-b872-1c58353d8293
+# ╠═c0b30181-d4e4-404d-933a-0118560b7691
+# ╠═9f44ac9a-348c-4bd7-aeef-1ddc784415db
+# ╠═759bb906-64a8-44f8-8a27-aaeb3d7de1db
+# ╠═556e8476-f758-45b6-9e71-d016e7d2463b
+# ╠═b99be647-bd2d-4f81-863a-0c8d1c5de9df
+# ╠═b95aff64-5ad4-4a44-86ff-3a289833a0a1
+# ╠═1fb594a8-a978-408c-98e6-e3d11d419257
+# ╠═acd579d9-0a47-4b34-90f6-6e31fd5fc9eb
+# ╠═b840bade-494e-472f-a06d-eafa402f5379
+# ╠═f9e6ffb6-7ba9-43d2-bb00-9d5ab9b0cb9b
+# ╠═7d6eb7ac-2545-4c21-8eba-6c715df55dc9
+# ╠═244c51fa-fcd4-4525-bc3e-47c475fdb5c1
+# ╠═553c1934-3384-4fbf-8016-c915da377d58
+# ╠═f63bee21-6405-48fe-8d88-52e46d4a92c4
+# ╠═35c9e12e-591b-4260-b4ea-2aa33148f5b4
+# ╠═3c19f180-ae24-43f5-9080-c59345ecab6e
+# ╠═fd867ba0-7278-4316-bed1-1b623231378a
+# ╠═9e38124a-8d5b-4c7d-9d71-6b9d892139e4
+# ╠═08ce0c2b-7c0d-4e23-ac10-87814b50f4af
+# ╠═79c603df-a482-424e-830f-f1326ec504df
+# ╠═3abba425-359d-433f-bff3-e3e3067e2e85
 # ╠═b085c25e-abd3-47d8-bb64-c7e0d90057da
 # ╠═fa9ef3db-faf9-41f8-aeac-849c064fe755
 # ╠═194f1112-2101-4e24-ae84-1e8663c0c15b
@@ -1610,5 +1817,7 @@ version = "1.4.1+0"
 # ╠═175cfc7a-0032-4f3c-8aa9-2688dbde23ce
 # ╠═7a330232-4e80-4d9e-b3fd-ae39ef1d7b15
 # ╠═64975b8c-a03b-4e0a-b037-2303095233af
+# ╠═9adcadd6-a1e2-40ae-97f2-ddc80e42891d
+# ╠═d2a019e9-49af-4118-a673-7dc09e522c45
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
