@@ -293,17 +293,25 @@ function resample2(x, fs, fr; phaseOffset=0, interp=:linear)
 end
 
 # ╔═╡ 0412914c-bcd6-4c10-be8b-7c80e05db170
+# ╠═╡ disabled = true
+#=╠═╡
 let
 	# data_mat = rowify(resample(data_unrotated[1:end], Fs, Fp2, interp=:linear)[offset:end], Xt)'
 	data_mat = rowify(resample2(data_unrotated, Fs, Fp2, phaseOffset=1.7, interp=:linear)[offset:end], Xt)'
 	data_mat = coherentavg(data_mat, 25)
 	img = HSV.(minmaxnorm(angle.(data_mat), 0, 360), 1, norm1(abs.(data_mat))*2)
 end
+  ╠═╡ =#
 
 # ╔═╡ eaee6dbd-8001-4726-92ff-f03e6808cf31
+# ╠═╡ disabled = true
+#=╠═╡
 offset
+  ╠═╡ =#
 
 # ╔═╡ 65088161-af51-469c-bb06-e4db462e4890
+# ╠═╡ disabled = true
+#=╠═╡
 function iqImage(num)
 	data = load_iq("./data/scene3-640x480-60-$(num)M-64M-40M.dat")
 
@@ -328,9 +336,14 @@ function iqImage(num)
 	img = HSV.(minmaxnorm(angle.(data_mat), 0, 360), 1, norm1(abs.(data_mat))*2)
 	save("iq_out/$(num).png", img)
 end
+  ╠═╡ =#
 
 # ╔═╡ e7e783e0-7c00-413e-8ba3-6dca6789ff18
+# ╠═╡ disabled = true
+# ╠═╡ skip_as_script = true
+#=╠═╡
 iqImage(425)
+  ╠═╡ =#
 
 # ╔═╡ 515e9873-ffa9-4cdd-85b9-7bb9ec9b54f6
 
@@ -366,7 +379,7 @@ PLUTO_MANIFEST_TOML_CONTENTS = """
 
 julia_version = "1.8.2"
 manifest_format = "2.0"
-project_hash = "f98474a60f1dc0c96c954e588f354795dab74c2d"
+project_hash = "1b3f390a7f1340f7abd9345b006afebd050df319"
 
 [[deps.AbstractFFTs]]
 deps = ["ChainRulesCore", "LinearAlgebra"]
